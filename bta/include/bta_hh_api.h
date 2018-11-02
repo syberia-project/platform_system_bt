@@ -33,7 +33,7 @@
 #endif
 
 #ifndef BTA_HH_SSR_MAX_LATENCY_DEF
-#define BTA_HH_SSR_MAX_LATENCY_DEF 800 /* 500 ms*/
+#define BTA_HH_SSR_MAX_LATENCY_DEF 24 /* 500 ms*/
 #endif
 
 #ifndef BTA_HH_SSR_MIN_TOUT_DEF
