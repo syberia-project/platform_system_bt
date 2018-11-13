@@ -1534,6 +1534,7 @@ tBTM_STATUS btm_ble_set_encryption(const RawAddress& bd_addr,
       }
     /* if salve role then fall through to call SMP_Pair below which will send a
        sec_request to request the master to encrypt the link */
+      FALLTHROUGH_INTENDED; /* FALLTHROUGH */
     case BTM_BLE_SEC_ENCRYPT_NO_MITM:
     case BTM_BLE_SEC_ENCRYPT_MITM:
       auth_req = (sec_act == BTM_BLE_SEC_ENCRYPT_NO_MITM)
@@ -1921,11 +1922,15 @@ void btm_ble_conn_complete(uint8_t* p, UNUSED_ATTR uint16_t evt_len,
 
 #if (BLE_PRIVACY_SPT == TRUE)
     peer_addr_type = bda_type;
-    match = btm_identity_addr_to_random_pseudo(&bda, &bda_type, true);
+
+    if (peer_addr_type & BLE_ADDR_TYPE_ID_BIT) {
+      match = btm_identity_addr_to_random_pseudo(&bda, &bda_type, true);
+    }
 
     /* possiblly receive connection complete with resolvable random while
        the device has been paired */
-    if (!match && BTM_BLE_IS_RESOLVE_BDA(bda)) {
+    if (!match && peer_addr_type == BLE_ADDR_RANDOM &&
+        BTM_BLE_IS_RESOLVE_BDA(bda)) {
       tBTM_SEC_DEV_REC* match_rec = btm_ble_resolve_random_addr(bda);
       if (match_rec) {
         LOG_INFO(LOG_TAG, "%s matched and resolved random address", __func__);
@@ -2033,8 +2038,8 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
       case SMP_OOB_REQ_EVT:
       case SMP_NC_REQ_EVT:
       case SMP_SC_OOB_REQ_EVT:
-        /* fall through */
         p_dev_rec->sec_flags |= BTM_SEC_LE_AUTHENTICATED;
+        FALLTHROUGH_INTENDED; /* FALLTHROUGH */
 
       case SMP_SEC_REQUEST_EVT:
         if (event == SMP_SEC_REQUEST_EVT &&
@@ -2045,7 +2050,7 @@ uint8_t btm_proc_smp_cback(tSMP_EVT event, const RawAddress& bd_addr,
         btm_cb.pairing_bda = bd_addr;
         p_dev_rec->sec_state = BTM_SEC_STATE_AUTHENTICATING;
         btm_cb.pairing_flags |= BTM_PAIR_FLAGS_LE_ACTIVE;
-      /* fall through */
+        FALLTHROUGH_INTENDED; /* FALLTHROUGH */
 
       case SMP_COMPLT_EVT:
         if (btm_cb.api.p_le_callback) {

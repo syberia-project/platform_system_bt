@@ -67,6 +67,9 @@ constexpr uint8_t CONTROL_POINT_OP_STOP = 0x02;
 constexpr int8_t VOLUME_UNKNOWN = 127;
 constexpr int8_t VOLUME_MIN = -127;
 
+// audio type
+constexpr uint8_t AUDIOTYPE_UNKNOWN = 0x00;
+
 namespace {
 
 // clang-format off
@@ -114,6 +117,13 @@ class HearingAidImpl;
 HearingAidImpl* instance;
 HearingAidAudioReceiver* audioReceiver;
 
+/** Possible states for the Connection Update status */
+typedef enum {
+  NONE,      // Connection Update not pending or has completed
+  AWAITING,  // Waiting for start the Connection Update operation
+  STARTED    // Connection Update has started
+} connection_update_status_t;
+
 struct HearingDevice {
   RawAddress address;
   /* This is true only during first connection to profile, until we store the
@@ -126,11 +136,11 @@ struct HearingDevice {
 
   /* For two hearing aids, you must update their parameters one after another,
    * not simulteanously, to ensure start of connection events for both devices
-   * are far from each other. This flag means that this device is waiting for
-   * update of parameters, that should happen after "LE Connection Update
+   * are far from each other. This status tracks whether this device is waiting
+   * for update of parameters, that should happen after "LE Connection Update
    * Complete" event
    */
-  bool connection_update_pending;
+  connection_update_status_t connection_update_status;
 
   /* if true, we are connected, L2CAP socket is open, we can stream audio*/
   bool accepting_audio;
@@ -156,7 +166,7 @@ struct HearingDevice {
       : address(address),
         first_connection(false),
         connecting_actively(false),
-        connection_update_pending(false),
+        connection_update_status(NONE),
         accepting_audio(false),
         conn_id(0),
         gap_handle(0),
@@ -173,7 +183,7 @@ struct HearingDevice {
       : address(address),
         first_connection(first_connection),
         connecting_actively(first_connection),
-        connection_update_pending(false),
+        connection_update_status(NONE),
         accepting_audio(false),
         conn_id(0),
         gap_handle(0),
@@ -233,9 +243,9 @@ class HearingDevices {
     return (iter == devices.end()) ? nullptr : &(*iter);
   }
 
-  bool IsAnyConnectionUpdatePending() {
+  bool IsAnyConnectionUpdateStarted() {
     for (const auto& d : devices) {
-      if (d.connection_update_pending) return true;
+      if (d.connection_update_status == STARTED) return true;
     }
 
     return false;
@@ -377,17 +387,19 @@ class HearingAidImpl : public HearingAid {
      * to move anchor point of both connections away from each other, to make
      * sure we'll be able to fit all the data we want in one connection event.
      */
-    bool any_update_pending = hearingDevices.IsAnyConnectionUpdatePending();
+    bool any_update_pending = hearingDevices.IsAnyConnectionUpdateStarted();
     // mark the device as pending connection update. If we don't start the
     // update now, it'll be started once current device finishes.
-    hearingDevice->connection_update_pending = true;
     if (!any_update_pending) {
+      hearingDevice->connection_update_status = STARTED;
       UpdateBleConnParams(address);
+    } else {
+      hearingDevice->connection_update_status = AWAITING;
     }
 
     // Set data length
     // TODO(jpawlowski: for 16khz only 87 is required, optimize
-    BTM_SetBleDataLength(address, 168);
+    BTM_SetBleDataLength(address, 167);
 
     tBTM_SEC_DEV_REC* p_dev_rec = btm_find_dev(address);
     if (p_dev_rec) {
@@ -428,10 +440,16 @@ class HearingAidImpl : public HearingAid {
       return;
     }
 
-    hearingDevice->connection_update_pending = false;
+    if (hearingDevice->connection_update_status != STARTED) {
+      LOG(INFO) << __func__
+                << ": Inconsistent state. Expecting state=STARTED but current="
+                << hearingDevice->connection_update_status;
+    }
+    hearingDevice->connection_update_status = NONE;
 
     for (auto& device : hearingDevices.devices) {
-      if (device.conn_id && device.connection_update_pending) {
+      if (device.conn_id && (device.connection_update_status == AWAITING)) {
+        device.connection_update_status = STARTED;
         UpdateBleConnParams(device.address);
         return;
       }
@@ -811,23 +829,13 @@ class HearingAidImpl : public HearingAid {
 
   void SendStart(const HearingDevice& device) {
     std::vector<uint8_t> start({CONTROL_POINT_OP_START, codec_in_use,
-                                0x02 /* media */, (uint8_t)current_volume});
+                                AUDIOTYPE_UNKNOWN, (uint8_t)current_volume});
 
     if (current_volume == VOLUME_UNKNOWN) start[3] = (uint8_t)VOLUME_MIN;
 
     BtaGattQueue::WriteCharacteristic(device.conn_id,
                                       device.audio_control_point_handle, start,
                                       GATT_WRITE, nullptr, nullptr);
-
-    // TODO(jpawlowski): this will be removed, once test devices get volume
-    // from start reqest
-    if (current_volume != VOLUME_UNKNOWN) {
-      std::vector<uint8_t> volume_value(
-          {static_cast<unsigned char>(current_volume)});
-      BtaGattQueue::WriteCharacteristic(device.conn_id, device.volume_handle,
-                                        volume_value, GATT_WRITE_NO_RSP,
-                                        nullptr, nullptr);
-    }
   }
 
   void OnAudioDataReady(const std::vector<uint8_t>& data) {
@@ -1100,6 +1108,8 @@ class HearingAidImpl : public HearingAid {
     // cancel autoconnect
     BTA_GATTC_CancelOpen(gatt_if, address, false);
 
+    DoDisconnectCleanUp(hearingDevice);
+
     hearingDevices.Remove(address);
 
     if (connected)
@@ -1111,16 +1121,31 @@ class HearingAidImpl : public HearingAid {
                           tBTA_GATT_REASON reason) {
     HearingDevice* hearingDevice = hearingDevices.FindByConnId(conn_id);
     if (!hearingDevice) {
-      VLOG(2) << "Skipping unknown device disconnect, conn_id=" << conn_id;
+      VLOG(2) << "Skipping unknown device disconnect, conn_id="
+              << loghex(conn_id);
       return;
     }
 
-    hearingDevice->accepting_audio = false;
-    hearingDevice->conn_id = 0;
-
-    BtaGattQueue::Clean(conn_id);
+    DoDisconnectCleanUp(hearingDevice);
 
     callbacks->OnConnectionState(ConnectionState::DISCONNECTED, remote_bda);
+  }
+
+  void DoDisconnectCleanUp(HearingDevice* hearingDevice) {
+    if (hearingDevice->connection_update_status != NONE) {
+      LOG(INFO) << __func__ << ": connection update not completed. Current="
+                << hearingDevice->connection_update_status;
+
+      if (hearingDevice->connection_update_status == STARTED) {
+        OnConnectionUpdateComplete(hearingDevice->conn_id);
+      }
+      hearingDevice->connection_update_status = NONE;
+    }
+
+    BtaGattQueue::Clean(hearingDevice->conn_id);
+
+    hearingDevice->accepting_audio = false;
+    hearingDevice->conn_id = 0;
   }
 
   void SetVolume(int8_t volume) override {
@@ -1294,7 +1319,8 @@ void HearingAid::CleanUp() {
 };
 
 void HearingAid::DebugDump(int fd) {
-  dprintf(fd, "\nHearing Aid Manager:\n");
+  dprintf(fd, "Hearing Aid Manager:\n");
   if (instance) instance->Dump(fd);
   HearingAidAudioSource::DebugDump(fd);
+  dprintf(fd, "\n");
 }
