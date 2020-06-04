@@ -172,7 +172,7 @@ static void read_or_set_metrics_salt() {
     metrics_salt.fill(0);
   }
   if (!AddressObfuscator::IsSaltValid(metrics_salt)) {
-    LOG(INFO) << __func__ << ": Metrics salt is not invalid, creating new one";
+    LOG(INFO) << __func__ << ": Metrics salt is] not invalid, creating new one";
     if (RAND_bytes(metrics_salt.data(), metrics_salt.size()) != 1) {
       LOG(FATAL) << __func__ << "Failed to generate salt for metrics";
     }
@@ -425,8 +425,8 @@ bool btif_config_get_bin(const std::string& section, const std::string& key,
       config_get_string(*config, section, key, NULL);
 
   if (!value_str_from_config) {
-    VLOG(1) << __func__ << ": cannot find string for section " << section
-            << ", key " << key;
+    LOG(WARNING) << __func__ << ": cannot find string for section " << section
+                 << ", key " << key;
     return false;
   }
 
