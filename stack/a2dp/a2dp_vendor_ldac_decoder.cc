@@ -131,7 +131,7 @@ bool A2DP_VendorLoadDecoderLdac(void) {
   // Open the decoder library
   ldac_bco_lib_handle = dlopen(LDAC_BCO_LIB_NAME, RTLD_NOW);
   if (ldac_bco_lib_handle == NULL) {
-    LOG_ERROR(LOG_TAG, "%s: cannot open LDAC decoder library %s: %s", __func__,
+    LOG_INFO(LOG_TAG, "%s: cannot open LDAC decoder library %s: %s", __func__,
               LDAC_BCO_LIB_NAME, dlerror());
     return false;
   }
